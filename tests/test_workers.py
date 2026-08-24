@@ -1,5 +1,8 @@
 from datetime import datetime, timedelta, timezone
 
+import pytest
+import csv
+import io
 from fastapi.testclient import TestClient
 
 
@@ -28,6 +31,90 @@ def test_create_shift_unknown_worker(client: TestClient):
             "end_time": "2026-08-10T17:00:00",
         },
     )
+def test_list_workers(client: TestClient):
+    client.post("/workers", json={"name": "Jamie Lee", "role": "Cook"})
+    client.post("/workers", json={"name": "Sam Osei", "role": "Cashier"})
+
+    response = client.get("/workers")
+    assert response.status_code == 200
+    names = {w["name"] for w in response.json()}
+    assert names == {"Jamie Lee", "Sam Osei"}
+
+def test_list_workers_exports(client: TestClient):
+    # creating a fake worker
+    worker = client.post("/workers", json={"name": "Jamie Lee", "role": "Cook", "active": True, "pay": 20})
+    assert worker.status_code == 201
+    fake_worker = worker.json()
+
+    response = client.get("/workers/export")
+    assert response.status_code == 200
+    assert response.headers["Content-Type"] == "text/csv"
+    assert response.headers["Content-Disposition"] == "attachment; filename=workers.csv"
+
+    # asserting that response has expected content in it
+    reader = csv.reader(io.StringIO(response.text))
+    rows = list(reader)
+
+    assert rows[0] == ["ID", "Name", "Role", "Active", "Hourly Pay"]
+    assert len(rows) == 2  # header + one worker row
+
+    row = rows[1]
+    assert row[0] == str(fake_worker["id"])
+    assert row[1] == fake_worker["name"]
+    assert row[2] == fake_worker["role"]
+    assert row[3] == str(fake_worker["active"])
+    assert row[4] == str(fake_worker.get("pay", ""))
+
+def test_get_worker_not_found(client: TestClient):
+    response = client.get("/workers/999")
+    assert response.status_code == 404
+
+
+def test_get_worker_with_matching_role(client: TestClient):
+    client.post("/workers", json={"name": "Jamie Lee", "role": "Cook"})
+    client.post("/workers", json={"name": "Sam Osei", "role": "Cashier"})
+
+    response = client.get("/workers?role=Cashier")
+    names = {w["name"] for w in response.json()}
+    assert names == {"Sam Osei"}
+
+
+def test_get_worker_with_no_matching_role(client: TestClient):
+    client.post("/workers", json={"name": "Jamie Lee", "role": "Cook"})
+    client.post("/workers", json={"name": "Sam Osei", "role": "Cashier"})
+
+    response = client.get("/workers?role=Owner")
+    names = {w["name"] for w in response.json()}
+    assert names == set()
+
+# using a parameterized function to test several case-insensitive inputs, including just firstname
+@pytest.mark.parametrize("search_query,expected", [("jamie", {"Jamie Lee"}), ("Jamie", {"Jamie Lee"}), ("Jamie Lee", {"Jamie Lee"})])
+def test_get_worker_with_matching_name(client: TestClient, search_query: str, expected: set):
+    client.post("/workers", json={"name": "Jamie Lee", "role": "Cook"})
+    client.post("/workers", json={"name": "Sam Osei", "role": "Cashier"})
+
+    response = client.get(f"/workers?name={search_query}")
+    names = {w["name"] for w in response.json()}
+    assert names == expected
+
+def test_get_worker_with_no_matching_name(client: TestClient):
+    client.post("/workers", json={"name": "Jamie Lee", "role": "Cook"})
+    client.post("/workers", json={"name": "Sam Osei", "role": "Cashier"})
+
+    response = client.get("/workers?name=Carmen Diaz")
+    names = {w["name"] for w in response.json()}
+    assert names == set()
+
+def test_get_worker_with_role_and_name(client: TestClient):
+    client.post("/workers", json={"name": "Jamie Lee", "role": "Cook"})
+    client.post("/workers", json={"name": "Sam Osei", "role": "Cashier"})
+
+    response = client.get("/workers?role=Cashier&name=Sam Osei")
+    names = {w["name"] for w in response.json()}
+    assert names == {"Sam Osei"}
+
+def test_worker_summary_unknown_worker(client: TestClient):
+    response = client.get("/workers/9999/summary")
     assert response.status_code == 404
 
 
